@@ -1,9 +1,9 @@
-#include "stdafx.h"
 #include "Client.h"
+#include <thread>
+#include <cstring>
 #include "sha1.h"
 #include "base64.h"
 #include "ClientManager.h"
-
 
 struct WriteRequestPart;
 struct WriteRequest {
@@ -17,6 +17,8 @@ struct WriteRequestPart {
 	int refCount;
 };
 
+extern std::thread::id g_WSUV_MainThreadID;
+extern std::vector<Client*> g_WSUV_Clients;
 
 struct DataFrameHeader {
 	char data[2];
@@ -60,13 +62,28 @@ Client::Client(){
 	m_bHasCompletedHandshake = false;
 	m_bClosing = false;
 	m_bDestroyed = false;
-	m_pUserData = nullptr;
+	
+	for(size_t i = 0; i < g_WSUV_Clients.size(); +i){
+		if(g_WSUV_Clients[i] != nullptr) continue;
+		g_WSUV_Clients[i] = this;
+		goto AddedMe;
+	}
+	
+	g_WSUV_Clients.push_back(this);
+	
+	AddedMe:;
 }
 
 Client::~Client(){
 	m_bClosing = true;
 	m_bDestroyed = true;
-
+	
+	for(size_t i = 0; i < g_WSUV_Clients.size(); +i){
+		if(g_WSUV_Clients[i] != this) continue;
+		g_WSUV_Clients[i] = nullptr;
+		break;
+	}
+	
 	for(auto &d : m_Frames){
 		delete[] d.data;
 	}
@@ -87,7 +104,7 @@ void Client::Destroy(){
 	
 	OnDestroy();
 	
-	uv_close((uv_handle_t*) &m_Client.m_Socket, [](uv_handle_t* handle){
+	uv_close((uv_handle_t*) &m_Socket, [](uv_handle_t* handle){
 		Client *client = (Client*) handle->data;
 		delete client;
 	});
@@ -327,7 +344,7 @@ void Client::ProcessDataFrame(uint8_t opcode, const char *data, size_t len){
 		return;
 	}
 
-	if(opcode == 2){
+	if(opcode == 1 || opcode == 2){
 		OnData(data, len);
 		return;
 	}
@@ -389,7 +406,6 @@ char *Client::CreatePacket(size_t len, uint8_t opcode){
 }
 
 void Client::CheckQueuedPackets(){
-	assert(g_SoloThinking);
 	for(char *packet : m_QueuedPackets){
 		WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - 10);
 		--part->refCount;
@@ -404,8 +420,9 @@ void Client::SendPacket(char *packet){
 
 	WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - 10);
 	++part->refCount;
-
-	if(!g_SoloThinking){
+	
+	
+	if(std::this_thread::get_id() != g_WSUV_MainThreadID){
 		m_QueuedPackets.push_back(packet);
 		return;
 	}

@@ -2,9 +2,9 @@
 #define WSUV_CLIENTMANAGER_H
 
 // Extend the class Client, and change this to the new name
-#define WSUV_ClientClass Client
+#define WSUV_ClientClass EchoClient
 // Also add its include in here:
-#include "Client.h"
+#include "EchoClient.h"
 
 class ClientManager {
 public:

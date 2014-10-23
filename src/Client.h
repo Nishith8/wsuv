@@ -1,17 +1,27 @@
 #ifndef WSUV_CLIENT_H
 #define WSUV_CLIENT_H
 
+#include <cstdint>
+#include <vector>
+#include "uv.h"
+
 // Note about multi threading:
 // This isn't thread-safe if multiple threads can manipulate the same packet at the same time,
-// Or if multiple threads can send to the same client at the same time.
+// or if multiple threads can send to the same client at the same time.
 // This means you can only use it if one thread "owns" the client at a time.
 
 // If you wanna make this thread safe, then you have to:
 // - Add a mutex to protect m_QueuedPackets
 // - Make m_bClosing and m_bDestroyed atomic (and change the code according to handle that, using load and compare_and_exchange)
+// - Make refcount atomic in the WriteRequest struct
+// Maybe more stuff, but anyways, you shouldn't do that.
 
+class ClientManager;
 class Client {
 public:
+	
+	// Closes the connection
+	void Destroy();
 	
 	void SendPacket(char *packet);
 	
@@ -23,23 +33,19 @@ public:
 	// Doesn't actually destroy it, only when it's sent. Call it immediatelly after CreatePacket and SendPacket
 	// You can't SendPacket if you've already destroyed it with this.
 	static void DestroyPacket(char *packet);
-
-	inline void* GetUserData(){ return m_pUserData; }
-	inline void  SetUserData(void *v){ m_pUserData = v; }
-
+	
 protected:
+	
+	Client();
+	~Client();
+	
 	// Note: OnDestroy is only called if OnInit is called
 	// OnInit is only called for valid connections
 	virtual void OnInit() = 0;
 	virtual void OnDestroy() = 0;
 	virtual void OnData(const char *data, size_t length) = 0;
 	
-	void Destroy();
-	
 private:
-	
-	Client();
-	~Client();
 	
 	struct DataFrame {
 		uint8_t opcode;
@@ -53,7 +59,6 @@ private:
 	void ProcessDataFrame(uint8_t opcode, const char *data, size_t len);
 	void CheckQueuedPackets();
 
-	void *m_pUserData;
 	uv_tcp_t m_Socket;
 	bool m_bClosing;
 	bool m_bDestroyed;
@@ -65,7 +70,5 @@ private:
 
 	friend ClientManager;
 };
-
-extern uint32_t g_iNumCursors;
 
 #endif

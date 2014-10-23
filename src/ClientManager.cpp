@@ -1,14 +1,18 @@
-#include "stdafx.h"
 #include "ClientManager.h"
 #include "Client.h"
+#include <thread>
 
 namespace {
 	uv_loop_t g_Loop;
 	uv_tcp_t g_Server;
 };
 
+std::thread::id g_WSUV_MainThreadID;
+std::vector<Client*> g_WSUV_Clients;
+
 void ClientManager::Init(){
 	//printf("Running libuv version %s\n", uv_version_string());
+	g_WSUV_MainThreadID = std::this_thread::get_id();
 	
 #ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);
@@ -24,8 +28,15 @@ void ClientManager::Init(){
 	uv_ip4_addr("0.0.0.0", 80, &addr);
 #endif
 	uv_tcp_nodelay(&g_Server, true);
-	uv_tcp_bind(&g_Server, (const struct sockaddr*) &addr, 0);
-	uv_listen((uv_stream_t*) &g_Server, 256, OnConnection);
+	if(uv_tcp_bind(&g_Server, (const struct sockaddr*) &addr, 0) != 0){
+		puts("wsuv: Couldn't bind tcp socket");
+		exit(1);
+	}
+	
+	if(uv_listen((uv_stream_t*) &g_Server, 256, OnConnection) != 0){
+		puts("wsuv: Couldn't start listening");
+		exit(1);
+	}
 
 }
 
@@ -70,6 +81,12 @@ void ClientManager::OnSocketData(uv_stream_t* stream, ssize_t nread, const uv_bu
 }
 
 void ClientManager::Run(){
+	for(size_t i = 0; i < g_WSUV_Clients.size(); ++i){
+		Client *client = g_WSUV_Clients[i];
+		if(client == nullptr) continue;
+		client->CheckQueuedPackets();
+	}
+	
 	uv_run(&g_Loop, UV_RUN_NOWAIT);
 }
 
