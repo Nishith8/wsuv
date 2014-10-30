@@ -89,7 +89,7 @@ Client::Client(){
 	m_bClosing = false;
 	m_bDestroyed = false;
 	
-	for(size_t i = 0; i < g_WSUV_Clients.size(); +i){
+	for(size_t i = 0; i < g_WSUV_Clients.size(); ++i){
 		if(g_WSUV_Clients[i] != nullptr) continue;
 		g_WSUV_Clients[i] = this;
 		goto AddedMe;
