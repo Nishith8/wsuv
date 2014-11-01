@@ -63,7 +63,7 @@ public:
 protected:
 	
 	Client();
-	~Client();
+	virtual ~Client();
 	
 	// Note: OnDestroy is only called if OnInit is called
 	// OnInit is only called for valid connections
