@@ -64,8 +64,6 @@ protected:
 	Client();
 	virtual ~Client();
 	
-	// Note: OnDestroy is only called if OnInit is called
-	// OnInit is only called for valid connections
 	virtual void OnInit() = 0;
 	virtual void OnDestroy() = 0;
 	virtual void OnData(const char *data, size_t length) = 0;
