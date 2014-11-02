@@ -1,3 +1,4 @@
+#include "stdafx.h"
 /*
 
 The MIT License (MIT)
@@ -104,7 +105,7 @@ Client::~Client(){
 	m_bClosing = true;
 	m_bDestroyed = true;
 	
-	for(size_t i = 0; i < g_WSUV_Clients.size(); +i){
+	for(size_t i = 0; i < g_WSUV_Clients.size(); ++i){
 		if(g_WSUV_Clients[i] != this) continue;
 		g_WSUV_Clients[i] = nullptr;
 		break;
@@ -152,119 +153,130 @@ void Client::OnSocketData(char *data, size_t len){
 	m_Buffer[m_iBufferPos] = 0;
 
 	if(!m_bHasCompletedHandshake){
-		// Haven't completed the header yet
-		if(strstr(m_Buffer, "\r\n\r\n") == nullptr) return;
-		
-		const char *str = m_Buffer;
-
-		bool badHeader = false;
-
-		// First line is a weird one, ignore it
-		str = strstr(m_Buffer, "\r\n") + 2;
-
-		bool hasUpgradeHeader = false;
-		bool hasConnectionHeader = false;
-		bool sendMyVersion = false;
-		bool hasVersionHeader = false;
-		std::string securityKey;
-		
-		for(;;){
-			auto nextLine = strstr(str, "\r\n");
-			// This means that we have finished parsing the headers
-			if(nextLine == str){
-				break;
-			}
+		if(len >= 2 && data[0] == '\r' && data[1] == '\n') {
+			// Skip websocket protocol
+			memmove(m_Buffer, m_Buffer + 2, m_iBufferPos - 2);
+			m_iBufferPos -= 2;
 			
-			if(nextLine == nullptr){
-				badHeader = true;
-				break;
-			}
-			
-			auto colonPos = strstr(str, ":");
-			if(colonPos == nullptr || colonPos > nextLine){
-				badHeader = true;
-				break;
-			}
+			m_bHasCompletedHandshake = true;
+			OnInit();
 
-			auto keyPos = str;
-			ssize_t keyLength = colonPos - keyPos;
-			auto valuePos = colonPos + 1;
-			while(*valuePos == ' ') ++valuePos;
-			ssize_t valueLength = nextLine - valuePos;
+		} else {
+			// Haven't completed the header yet
+			if(strstr(m_Buffer, "\r\n\r\n") == nullptr) return;
 
-			if(strncmp("Upgrade", keyPos, keyLength) == 0){
-				hasUpgradeHeader = true;
-				if(strncmp("websocket", valuePos, valueLength) != 0){
+			const char *str = m_Buffer;
+
+			bool badHeader = false;
+
+			// First line is a weird one, ignore it
+			str = strstr(m_Buffer, "\r\n") + 2;
+
+			bool hasUpgradeHeader = false;
+			bool hasConnectionHeader = false;
+			bool sendMyVersion = false;
+			bool hasVersionHeader = false;
+			std::string securityKey;
+
+			for(;;) {
+				auto nextLine = strstr(str, "\r\n");
+				// This means that we have finished parsing the headers
+				if(nextLine == str) {
+					break;
+				}
+
+				if(nextLine == nullptr) {
 					badHeader = true;
 					break;
 				}
-			}else if(strncmp("Connection", keyPos, keyLength) == 0){
-				hasConnectionHeader = true;
-				auto uppos = strstr(valuePos, "Upgrade");
-				if(uppos == nullptr || uppos > nextLine){
+
+				auto colonPos = strstr(str, ":");
+				if(colonPos == nullptr || colonPos > nextLine) {
 					badHeader = true;
 					break;
 				}
-			} else if(strncmp("Sec-WebSocket-Key", keyPos, keyLength) == 0){
-				securityKey = std::string(valuePos, valueLength);
-			}else if(strncmp("Sec-WebSocket-Version", keyPos, keyLength) == 0){
-				hasVersionHeader = true;
-				if(strncmp("13", valuePos, valueLength) != 0){
-					sendMyVersion = true;
-				}
-			}else if(strncmp("Origin", keyPos, keyLength) == 0){
-				// If you want to filter stuff that doesn't come from your origin, change the url
-				/*
-				if(strncmp("http://localhost", valuePos, valueLength) != 0 && strncmp("http://example.com", valuePos, valueLength) != 0){
+
+				auto keyPos = str;
+				ssize_t keyLength = colonPos - keyPos;
+				auto valuePos = colonPos + 1;
+				while(*valuePos == ' ') ++valuePos;
+				ssize_t valueLength = nextLine - valuePos;
+
+				if(strncmp("Upgrade", keyPos, keyLength) == 0) {
+					hasUpgradeHeader = true;
+					if(strncmp("websocket", valuePos, valueLength) != 0) {
+						badHeader = true;
+						break;
+					}
+				} else if(strncmp("Connection", keyPos, keyLength) == 0) {
+					hasConnectionHeader = true;
+					auto uppos = strstr(valuePos, "Upgrade");
+					if(uppos == nullptr || uppos > nextLine) {
+						badHeader = true;
+						break;
+					}
+				} else if(strncmp("Sec-WebSocket-Key", keyPos, keyLength) == 0) {
+					securityKey = std::string(valuePos, valueLength);
+				} else if(strncmp("Sec-WebSocket-Version", keyPos, keyLength) == 0) {
+					hasVersionHeader = true;
+					if(strncmp("13", valuePos, valueLength) != 0) {
+						sendMyVersion = true;
+					}
+				} else if(strncmp("Origin", keyPos, keyLength) == 0) {
+					// If you want to filter stuff that doesn't come from your origin, change the url
+					/*
+					if(strncmp("http://localhost", valuePos, valueLength) != 0 && strncmp("http://example.com", valuePos, valueLength) != 0){
 					badHeader = true;
 					break;
-				}*/
+					}*/
+				}
+
+				str = nextLine + 2;
 			}
 
-			str = nextLine + 2;
-		}
-
-		if(!hasUpgradeHeader) badHeader = true;
-		if(!hasConnectionHeader) badHeader = true;
-		if(!hasVersionHeader) badHeader = true;
+			if(!hasUpgradeHeader) badHeader = true;
+			if(!hasConnectionHeader) badHeader = true;
+			if(!hasVersionHeader) badHeader = true;
 
 
 #define EXPAND_LITERAL(x) x, strlen(x)
 
-		if(badHeader){
-			SendRawAndDestroy(EXPAND_LITERAL("HTTP/1.1 400 Bad Request\r\n\r\n"));
-			return;
-		}
+			if(badHeader) {
+				SendRawAndDestroy(EXPAND_LITERAL("HTTP/1.1 400 Bad Request\r\n\r\n"));
+				return;
+			}
 
-		securityKey += "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-		unsigned char hash[20];
-		sha1::calc(securityKey.data(), securityKey.size(), hash);
-		auto solvedHash = base64_encode(hash, sizeof(hash));
-		auto allocatedHash = new char[solvedHash.size()];
-		memcpy(allocatedHash, solvedHash.data(), solvedHash.size());
+			securityKey += "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+			unsigned char hash[20];
+			sha1::calc(securityKey.data(), securityKey.size(), hash);
+			auto solvedHash = base64_encode(hash, sizeof(hash));
+			auto allocatedHash = new char[solvedHash.size()];
+			memcpy(allocatedHash, solvedHash.data(), solvedHash.size());
 
-		SendRaw(EXPAND_LITERAL("HTTP/1.1 101 Switching Protocols\r\n"));
-		SendRaw(EXPAND_LITERAL("Upgrade: websocket\r\n"));
-		SendRaw(EXPAND_LITERAL("Connection: Upgrade\r\n"));
-		if(sendMyVersion){
-			SendRaw(EXPAND_LITERAL("Sec-WebSocket-Version: 13\r\n"));
+			SendRaw(EXPAND_LITERAL("HTTP/1.1 101 Switching Protocols\r\n"));
+			SendRaw(EXPAND_LITERAL("Upgrade: websocket\r\n"));
+			SendRaw(EXPAND_LITERAL("Connection: Upgrade\r\n"));
+			if(sendMyVersion) {
+				SendRaw(EXPAND_LITERAL("Sec-WebSocket-Version: 13\r\n"));
 
-		}
-		SendRaw(EXPAND_LITERAL("Sec-WebSocket-Accept: "));
-		SendRaw(allocatedHash, solvedHash.size(), true);
-		SendRaw(EXPAND_LITERAL("\r\n\r\n"));
+			}
+			SendRaw(EXPAND_LITERAL("Sec-WebSocket-Accept: "));
+			SendRaw(allocatedHash, solvedHash.size(), true);
+			SendRaw(EXPAND_LITERAL("\r\n\r\n"));
 
-		if(!sendMyVersion){
-			m_bHasCompletedHandshake = true;
+			if(!sendMyVersion) {
+				m_bHasCompletedHandshake = true;
 
-			// Reset buffer
-			m_iBufferPos = 0;
+				// Reset buffer, notice that this assumes that the browser won't send anything before
+				// waiting for the header response to come.
+				m_iBufferPos = 0;
 
-			OnInit();
-		}
+				OnInit();
+			}
 
 #undef EXPAND_LITERAL
-		return;
+			return;
+		}
 	}
 	
 	while(m_iBufferPos > 0){
@@ -458,7 +470,7 @@ void Client::SendPacket(char *packet){
 
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){
 		if(--part->refCount == 0){
-			delete part;
+			delete[] (char*)part;
 		}
 
 		Destroy();
@@ -476,7 +488,7 @@ void Client::SendPacket(char *packet){
 		}
 
 		if(--req->part->refCount == 0){
-			delete req->part;
+			delete[] (char*)req->part;
 		}
 		delete req;
 	});
@@ -549,6 +561,6 @@ void Client::SendRaw(const char *data, size_t len, bool ownsPointer){
 void Client::DestroyPacket(char *packet){
 	WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - 10);
 	if(--part->refCount == 0){
-		delete part;
+		delete[] (char*)part;
 	}
 }

@@ -34,7 +34,7 @@ SOFTWARE.
 
 class ClientManager {
 public:
-	static void Init();
+	static void Init(int port);
 	static void Run();
 	static void Destroy();
 	

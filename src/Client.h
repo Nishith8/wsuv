@@ -45,7 +45,6 @@ SOFTWARE.
 class ClientManager;
 class Client {
 public:
-	
 	// Closes the connection
 	void Destroy();
 	

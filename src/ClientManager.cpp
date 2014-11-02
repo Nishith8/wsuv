@@ -1,3 +1,4 @@
+#include "stdafx.h"
 /*
 
 The MIT License (MIT)
@@ -36,7 +37,7 @@ namespace {
 std::thread::id g_WSUV_MainThreadID;
 std::vector<Client*> g_WSUV_Clients;
 
-void ClientManager::Init(){
+void ClientManager::Init(int port) {
 	//printf("Running libuv version %s\n", uv_version_string());
 	g_WSUV_MainThreadID = std::this_thread::get_id();
 	
@@ -48,11 +49,7 @@ void ClientManager::Init(){
 	
 	uv_tcp_init(&g_Loop, &g_Server);
 	struct sockaddr_in addr;
-#ifdef DEBUG
-	uv_ip4_addr("0.0.0.0", 8080, &addr);
-#else
-	uv_ip4_addr("0.0.0.0", 80, &addr);
-#endif
+	uv_ip4_addr("0.0.0.0", port, &addr);
 	uv_tcp_nodelay(&g_Server, true);
 	if(uv_tcp_bind(&g_Server, (const struct sockaddr*) &addr, 0) != 0){
 		puts("wsuv: Couldn't bind tcp socket");
