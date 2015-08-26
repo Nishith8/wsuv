@@ -48,16 +48,16 @@ public:
 	// Closes the connection
 	void Destroy();
 	
-	void SendPacket(char *packet);
+	void SendPacket(unsigned char *packet);
 	
 	// Creates a packet
 	// You then have to send it to clients using SendPacket
 	// Then you have to destroy it with DestroyPacket.
-	static char *CreatePacket(size_t len, uint8_t opcode = 2);
+	static unsigned char *CreatePacket(size_t len, uint8_t opcode = 2);
 	
 	// Doesn't actually destroy it, only when it's sent. Call it immediatelly after CreatePacket and SendPacket
 	// You can't SendPacket if you've already destroyed it with this.
-	static void DestroyPacket(char *packet);
+	static void DestroyPacket(unsigned char *packet);
 	
 protected:
 	
@@ -66,7 +66,7 @@ protected:
 	
 	virtual void OnInit() = 0;
 	virtual void OnDestroy() = 0;
-	virtual void OnData(const char *data, size_t length) = 0;
+	virtual void OnData(const unsigned char *data, size_t length) = 0;
 	
 private:
 	
@@ -76,20 +76,22 @@ private:
 		size_t len;
 	};
 
-	void OnSocketData(char *data, size_t len);
+	void OnSocketData(unsigned char *data, size_t len);
 	void SendRawAndDestroy(const char *data, size_t len);
 	void SendRaw(const char *data, size_t len, bool ownsPointer = false);
-	void ProcessDataFrame(uint8_t opcode, const char *data, size_t len);
+	void ProcessDataFrame(uint8_t opcode, const unsigned char *data, size_t len);
 	void CheckQueuedPackets();
 
 	uv_tcp_t m_Socket;
 	bool m_bClosing;
 	bool m_bDestroyed;
 	bool m_bHasCompletedHandshake;
+	bool m_bCompressionEnabled = false;
+	bool m_bFrameHasCompression = false;
 	std::vector<DataFrame> m_Frames;
-	std::vector<char*> m_QueuedPackets;
+	std::vector<unsigned char*> m_QueuedPackets;
 	size_t m_iBufferPos;
-	char m_Buffer[16 * 1024]; // Increase the size if needed
+	unsigned char m_Buffer[16 * 1024]; // Increase the size if needed
 
 	friend ClientManager;
 };

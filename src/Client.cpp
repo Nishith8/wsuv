@@ -32,6 +32,44 @@ SOFTWARE.
 #include "base64.h"
 #include "ClientManager.h"
 
+#define HEADER_PADDING 10
+
+struct DataFrameHeader {
+	char data[2];
+
+	DataFrameHeader() { data[0] = 0; data[1] = 0; }
+
+	void fin(bool v) { data[0] &= ~(1 << 7); data[0] |= v << 7; }
+	void rsv1(bool v) { data[0] &= ~(1 << 6); data[0] |= v << 6; }
+	void rsv2(bool v) { data[0] &= ~(1 << 5); data[0] |= v << 5; }
+	void rsv3(bool v) { data[0] &= ~(1 << 4); data[0] |= v << 4; }
+	void mask(bool v) { data[1] &= ~(1 << 7); data[1] |= v << 7; }
+	void opcode(uint8_t v) {
+		data[0] &= ~0x0F;
+		data[0] |= v & 0x0F;
+	}
+
+	void len(uint8_t v) {
+		data[1] &= ~0x7F;
+		data[1] |= v & 0x7F;
+	}
+
+	bool fin() { return (data[0] >> 7) & 1; }
+	bool rsv1() { return (data[0] >> 6) & 1; }
+	bool rsv2() { return (data[0] >> 5) & 1; }
+	bool rsv3() { return (data[0] >> 4) & 1; }
+	bool mask() { return (data[1] >> 7) & 1; }
+
+	uint8_t opcode() {
+		return data[0] & 0x0F;
+	}
+
+	uint8_t len() {
+		return data[1] & 0x7F;
+	}
+};
+
+
 struct WriteRequestPart;
 struct WriteRequest {
 	uv_write_t req;
@@ -41,48 +79,16 @@ struct WriteRequest {
 
 struct WriteRequestPart {
 	uv_buf_t buf;
+	size_t packetLen;
+	size_t headerLen;
 	int refCount;
 };
 
 extern std::thread::id g_WSUV_MainThreadID;
 extern std::vector<Client*> g_WSUV_Clients;
 
-struct DataFrameHeader {
-	char data[2];
 
-	DataFrameHeader(){ data[0] = 0; data[1] = 0; }
-
-	void fin(bool v){ data[0] &= ~(1 << 7); data[0] |= v << 7; }
-	void rsv1(bool v){ data[0] &= ~(1 << 6); data[0] |= v << 6; }
-	void rsv2(bool v){ data[0] &= ~(1 << 5); data[0] |= v << 5; }
-	void rsv3(bool v){ data[0] &= ~(1 << 4); data[0] |= v << 4; }
-	void mask(bool v){ data[1] &= ~(1 << 7); data[1] |= v << 7; }
-	void opcode(uint8_t v){
-		data[0] &= ~0x0F;
-		data[0] |= v & 0x0F;
-	}
-
-	void len(uint8_t v){
-		data[1] &= ~0x7F;
-		data[1] |= v & 0x7F;
-	}
-
-	bool fin(){  return (data[0] >> 7) & 1; }
-	bool rsv1(){ return (data[0] >> 6) & 1; }
-	bool rsv2(){ return (data[0] >> 5) & 1; }
-	bool rsv3(){ return (data[0] >> 4) & 1; }
-	bool mask(){ return (data[1] >> 7) & 1; }
-
-	uint8_t opcode(){
-		return data[0] & 0x0F;
-	}
-
-	uint8_t len(){
-		return data[1] & 0x7F;
-	}
-};
-
-static_assert(sizeof(DataFrameHeader) == 2, "DataFrame basic header must have 4 bytes (we only use 2 though)");
+static_assert(sizeof(DataFrameHeader) == 2, "DataFrame basic header must have 2 bytes");
 
 Client::Client(){
 	m_iBufferPos = 0;
@@ -115,8 +121,8 @@ Client::~Client(){
 		delete[] d.data;
 	}
 
-	for(char *packet : m_QueuedPackets){
-		WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - 10);
+	for(unsigned char *packet : m_QueuedPackets){
+		WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart)-HEADER_PADDING);
 		if(--part->refCount == 0){
 			delete part;
 		}
@@ -138,7 +144,7 @@ void Client::Destroy(){
 }
 
 
-void Client::OnSocketData(char *data, size_t len){
+void Client::OnSocketData(unsigned char *data, size_t len){
 	if(m_bClosing || m_bDestroyed) return;
 
 	// This should still give us a byte to put a null terminator
@@ -153,158 +159,187 @@ void Client::OnSocketData(char *data, size_t len){
 	m_Buffer[m_iBufferPos] = 0;
 
 	if(!m_bHasCompletedHandshake){
-		if(len >= 2 && data[0] == '\r' && data[1] == '\n') {
-			// Skip websocket protocol
-			memmove(m_Buffer, m_Buffer + 2, m_iBufferPos - 2);
-			m_iBufferPos -= 2;
-			
-			m_bHasCompletedHandshake = true;
-			OnInit();
+		// Haven't completed the header yet
+		if(strstr((char*)m_Buffer, "\r\n\r\n") == nullptr) return;
 
-		} else {
-			// Haven't completed the header yet
-			if(strstr(m_Buffer, "\r\n\r\n") == nullptr) return;
+		const char *str = (char*)m_Buffer;
 
-			const char *str = m_Buffer;
+		bool badHeader = false;
 
-			bool badHeader = false;
+		// First line is a weird one, ignore it
+		str = strstr(str, "\r\n") + 2; //-V519
 
-			// First line is a weird one, ignore it
-			str = strstr(m_Buffer, "\r\n") + 2;
+		bool hasUpgradeHeader = false;
+		bool hasConnectionHeader = false;
+		bool sendMyVersion = false;
+		bool hasVersionHeader = false;
+		bool hasSecurityKey = false;
+		std::string securityKey;
 
-			bool hasUpgradeHeader = false;
-			bool hasConnectionHeader = false;
-			bool sendMyVersion = false;
-			bool hasVersionHeader = false;
-			std::string securityKey;
-
-			for(;;) {
-				auto nextLine = strstr(str, "\r\n");
-				// This means that we have finished parsing the headers
-				if(nextLine == str) {
-					break;
-				}
-
-				if(nextLine == nullptr) {
-					badHeader = true;
-					break;
-				}
-
-				auto colonPos = strstr(str, ":");
-				if(colonPos == nullptr || colonPos > nextLine) {
-					badHeader = true;
-					break;
-				}
-
-				auto keyPos = str;
-				ssize_t keyLength = colonPos - keyPos;
-				auto valuePos = colonPos + 1;
-				while(*valuePos == ' ') ++valuePos;
-				ssize_t valueLength = nextLine - valuePos;
-
-				if(strncmp("Upgrade", keyPos, keyLength) == 0) {
-					hasUpgradeHeader = true;
-					if(strncmp("websocket", valuePos, valueLength) != 0) {
-						badHeader = true;
-						break;
-					}
-				} else if(strncmp("Connection", keyPos, keyLength) == 0) {
-					hasConnectionHeader = true;
-					auto uppos = strstr(valuePos, "Upgrade");
-					if(uppos == nullptr || uppos > nextLine) {
-						badHeader = true;
-						break;
-					}
-				} else if(strncmp("Sec-WebSocket-Key", keyPos, keyLength) == 0) {
-					securityKey = std::string(valuePos, valueLength);
-				} else if(strncmp("Sec-WebSocket-Version", keyPos, keyLength) == 0) {
-					hasVersionHeader = true;
-					if(strncmp("13", valuePos, valueLength) != 0) {
-						sendMyVersion = true;
-					}
-				} else if(strncmp("Origin", keyPos, keyLength) == 0) {
-					// If you want to filter stuff that doesn't come from your origin, change the url
-					/*
-					if(strncmp("http://localhost", valuePos, valueLength) != 0 && strncmp("http://example.com", valuePos, valueLength) != 0){
-					badHeader = true;
-					break;
-					}*/
-				}
-
-				str = nextLine + 2;
+		for(;;) {
+			auto nextLine = strstr(str, "\r\n");
+			// This means that we have finished parsing the headers
+			if(nextLine == str) {
+				break;
 			}
 
-			if(!hasUpgradeHeader) badHeader = true;
-			if(!hasConnectionHeader) badHeader = true;
-			if(!hasVersionHeader) badHeader = true;
+			if(nextLine == nullptr) {
+				badHeader = true;
+				break;
+			}
+
+			auto colonPos = strstr(str, ":");
+			if(colonPos == nullptr || colonPos > nextLine) {
+				badHeader = true;
+				break;
+			}
+
+			auto keyPos = str;
+			ssize_t keyLength = colonPos - keyPos;
+			auto valuePos = colonPos + 1;
+			while(*valuePos == ' ') ++valuePos;
+			ssize_t valueLength = nextLine - valuePos;
+
+			if(strncmp("Upgrade", keyPos, keyLength) == 0) {
+				hasUpgradeHeader = true;
+				if(strncmp("websocket", valuePos, valueLength) != 0 && strncmp("Websocket", valuePos, valueLength) != 0) {
+					badHeader = true;
+					break;
+				}
+			} else if(strncmp("Connection", keyPos, keyLength) == 0) {
+				hasConnectionHeader = true;
+				auto uppos = strstr(valuePos, "Upgrade");
+				if(uppos == nullptr || uppos > nextLine) {
+					badHeader = true;
+					break;
+				}
+			} else if(strncmp("Sec-WebSocket-Key", keyPos, keyLength) == 0) {
+				hasSecurityKey = true;
+				securityKey = std::string(valuePos, valueLength);
+			} else if(strncmp("Sec-WebSocket-Version", keyPos, keyLength) == 0) {
+				hasVersionHeader = true;
+				if(strncmp("13", valuePos, valueLength) != 0) {
+					sendMyVersion = true;
+				}
+			} else if(strncmp("Sec-WebSocket-Extensions", keyPos, keyLength) == 0){
+				auto p = strstr(valuePos, "permessage-deflate");
+				if(p != nullptr && p <= nextLine) {
+#ifdef DEBUG
+					//m_bCompressionEnabled = true;
+#endif
+				}
+			} else if(strncmp("Origin", keyPos, keyLength) == 0) {
+				if(strncmp("http://localhost", valuePos, valueLength) != 0
+					&& strncmp("http://agar.io", valuePos, valueLength) != 0
+					&& strncmp("http://10.10.2.13", valuePos, valueLength) != 0
+					&& strncmp("https://localhost", valuePos, valueLength) != 0
+					&& strncmp("https://agar.io", valuePos, valueLength) != 0
+					&& strncmp("https://10.10.2.13", valuePos, valueLength) != 0
+				) {
+					badHeader = true;
+					break;
+				}
+			}
+
+			str = nextLine + 2;
+		}
+
+		if(!hasUpgradeHeader) badHeader = true;
+		if(!hasConnectionHeader) badHeader = true;
+		if(!hasVersionHeader) badHeader = true;
+		if(!hasSecurityKey) badHeader = true;
 
 
 #define EXPAND_LITERAL(x) x, strlen(x)
 
-			if(badHeader) {
-				SendRawAndDestroy(EXPAND_LITERAL("HTTP/1.1 400 Bad Request\r\n\r\n"));
-				return;
-			}
-
-			securityKey += "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-			unsigned char hash[20];
-			sha1::calc(securityKey.data(), securityKey.size(), hash);
-			auto solvedHash = base64_encode(hash, sizeof(hash));
-			auto allocatedHash = new char[solvedHash.size()];
-			memcpy(allocatedHash, solvedHash.data(), solvedHash.size());
-
-			SendRaw(EXPAND_LITERAL("HTTP/1.1 101 Switching Protocols\r\n"));
-			SendRaw(EXPAND_LITERAL("Upgrade: websocket\r\n"));
-			SendRaw(EXPAND_LITERAL("Connection: Upgrade\r\n"));
-			if(sendMyVersion) {
-				SendRaw(EXPAND_LITERAL("Sec-WebSocket-Version: 13\r\n"));
-
-			}
-			SendRaw(EXPAND_LITERAL("Sec-WebSocket-Accept: "));
-			SendRaw(allocatedHash, solvedHash.size(), true);
-			SendRaw(EXPAND_LITERAL("\r\n\r\n"));
-
-			if(!sendMyVersion) {
-				m_bHasCompletedHandshake = true;
-
-				// Reset buffer, notice that this assumes that the browser won't send anything before
-				// waiting for the header response to come.
-				m_iBufferPos = 0;
-
-				OnInit();
-			}
-
-#undef EXPAND_LITERAL
+		if(badHeader) {
+			SendRawAndDestroy(EXPAND_LITERAL("HTTP/1.1 400 Bad Request\r\n\r\n"));
 			return;
 		}
+
+		securityKey += "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+		unsigned char hash[20];
+		sha1::calc(securityKey.data(), securityKey.size(), hash);
+		auto solvedHash = base64_encode(hash, sizeof(hash));
+		auto allocatedHash = new char[solvedHash.size()];
+		memcpy(allocatedHash, solvedHash.data(), solvedHash.size());
+
+		SendRaw(EXPAND_LITERAL("HTTP/1.1 101 Switching Protocols\r\n"));
+		SendRaw(EXPAND_LITERAL("Upgrade: websocket\r\n"));
+		SendRaw(EXPAND_LITERAL("Connection: Upgrade\r\n"));
+		if(sendMyVersion) {
+			SendRaw(EXPAND_LITERAL("Sec-WebSocket-Version: 13\r\n"));
+		}
+
+		if(m_bCompressionEnabled) {
+			SendRaw(EXPAND_LITERAL("Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover\r\n"));
+		}
+
+
+		SendRaw(EXPAND_LITERAL("Sec-WebSocket-Accept: "));
+		SendRaw(allocatedHash, solvedHash.size(), true);
+		SendRaw(EXPAND_LITERAL("\r\n\r\n"));
+
+		if(!sendMyVersion) {
+			m_bHasCompletedHandshake = true;
+
+			// Reset buffer, notice that this assumes that the browser won't send anything before
+			// waiting for the header response to come.
+			m_iBufferPos = 0;
+
+			OnInit();
+		}
+
+#undef EXPAND_LITERAL
+
+		return;
 	}
 	
-	while(m_iBufferPos > 0){
+	// Websockets
+		
+	for(;;){
 		// Not enough to read the header
 		if(m_iBufferPos < 2) return;
 
 		auto &header = *(DataFrameHeader*) m_Buffer;
-	
-		if(header.rsv1() || header.rsv2() || header.rsv3()){
+			
+		if(m_bCompressionEnabled) {
+			if(m_Frames.empty()) {
+				m_bFrameHasCompression = header.rsv1();
+				printf("Frame has compression: %d\n", (int)m_bFrameHasCompression);
+			}
+		} else {
+			if(header.rsv1()) {
+				Destroy();
+				return;
+			}
+		}
+
+		if(header.rsv2() || header.rsv3()){
 			Destroy();
 			return;
 		}
 
-		char *curPosition = m_Buffer + 2;
+		unsigned char *curPosition = m_Buffer + 2;
 
 		size_t frameLength = header.len();
 		if(frameLength == 126){
 			if(m_iBufferPos < 4) return;
-			frameLength = *(uint16_t*) curPosition;
+			frameLength = (*(uint8_t*)(curPosition) << 8) | (*(uint8_t*)(curPosition + 1));
 			curPosition += 2;
 		}else if(frameLength == 127){
 			if(m_iBufferPos < 10) return;
-			frameLength = *(uint64_t*) curPosition;
+
+			frameLength = ((uint64_t)*(uint8_t*)(curPosition) << 56) | ((uint64_t)*(uint8_t*)(curPosition + 1) << 48)
+				| ((uint64_t)*(uint8_t*)(curPosition + 2) << 40) | ((uint64_t)*(uint8_t*)(curPosition + 3) << 32)
+				| (*(uint8_t*)(curPosition + 4) << 24) | (*(uint8_t*)(curPosition + 5) << 16)
+				| (*(uint8_t*)(curPosition + 6) << 8) | (*(uint8_t*)(curPosition + 7) << 0);
+
 			curPosition += 8;
 		}
 
 		auto amountLeft = m_iBufferPos - (curPosition - m_Buffer);
-		const char *maskKey = nullptr;
+		const unsigned char *maskKey = nullptr;
 		if(header.mask()){
 			if(amountLeft < 4) return;
 			maskKey = curPosition;
@@ -335,7 +370,8 @@ void Client::OnSocketData(char *data, size_t len){
 				}
 				m_Frames.push_back(frame);
 			}
-		
+				
+
 			if(header.fin()){
 				// Assemble frame
 				size_t totalLength = 0;
@@ -343,7 +379,7 @@ void Client::OnSocketData(char *data, size_t len){
 					totalLength += frame.len;
 				}
 
-				char *allFrames = new char[totalLength];
+				unsigned char *allFrames = new unsigned char[totalLength];
 				size_t allFramesPos = 0;
 				for(DataFrame &frame : m_Frames){
 					memcpy(allFrames + allFramesPos, frame.data, frame.len);
@@ -352,11 +388,18 @@ void Client::OnSocketData(char *data, size_t len){
 				}
 
 				ProcessDataFrame(m_Frames[0].opcode, allFrames, totalLength);
-			
+				
 				m_Frames.clear();
 				delete[] allFrames;
+			} else {
+				size_t totalLen = 0;
+				for(DataFrame &frame : m_Frames) {
+					totalLen += frame.len;
+				}
+
+				if(totalLen >= 16 * 1024) Destroy();
 			}
-		
+			
 		}
 
 		size_t consumed = (curPosition - m_Buffer) + frameLength;
@@ -364,12 +407,23 @@ void Client::OnSocketData(char *data, size_t len){
 		m_iBufferPos -= consumed;
 	}
 }
+void Client::ProcessDataFrame(uint8_t opcode, const unsigned char *rdata, size_t rlen){
+	const unsigned char *data = nullptr;
 
-void Client::ProcessDataFrame(uint8_t opcode, const char *data, size_t len){
-	//printf("Received frame opcode %d\n", (int) opcode);
+	size_t len;
+	if(m_bFrameHasCompression) {
+		return;
+		//FIXME
+		//printf("Decompressed from %d to %d\n", (int)rlen, (int)len);
+
+	} else {
+		data = rdata;
+		len = rlen;
+	}
+
 	if(opcode == 9){
 		// Ping
-		char *packet = CreatePacket(len, 10);
+		unsigned char *packet = CreatePacket(len, 10);
 		memcpy(packet, data, len);
 		SendPacket(packet);
 		DestroyPacket(packet);
@@ -388,7 +442,11 @@ void Client::ProcessDataFrame(uint8_t opcode, const char *data, size_t len){
 	}
 }
 
-char *Client::CreatePacket(size_t len, uint8_t opcode){
+inline WriteRequestPart* PacketToWriteRequest(unsigned char *packet) {
+	return (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - HEADER_PADDING);
+}
+
+unsigned char *Client::CreatePacket(size_t len, uint8_t opcode){
 	// Creates the packet in this format:
 	// [WriteRequestPart] ...[Padding if needed] [DataFrameHeader] [data]
 	// The padding is added to make DataFrameHeader always use 10 bytes.
@@ -405,13 +463,20 @@ char *Client::CreatePacket(size_t len, uint8_t opcode){
 		}
 	}
 
-	char *data = new char[sizeof(WriteRequestPart) + 10 + len];
+	unsigned char *data = new unsigned char[sizeof(WriteRequestPart)+HEADER_PADDING + len];
 
 	WriteRequestPart *req = (WriteRequestPart*) data;
-	auto headerStart = (data + sizeof(WriteRequestPart) + 10 - headerLen);
+	auto headerStart = (data + sizeof(WriteRequestPart)+HEADER_PADDING - headerLen);
+
 	req->buf.len = headerLen + len;
-	req->buf.base = headerStart;
+	req->buf.base = (char*)headerStart;
+
+
 	req->refCount = 1;
+	req->headerLen = headerLen;
+	req->packetLen = len;
+	req->compressed = nullptr;
+	req->useCompression = false;
 
 	auto &header = *(DataFrameHeader*)headerStart;
 	header.fin(true);
@@ -440,12 +505,12 @@ char *Client::CreatePacket(size_t len, uint8_t opcode){
 		header.len(len);	
 	}
 
-	return data + sizeof(WriteRequestPart) + 10;
+	return data + sizeof(WriteRequestPart)+HEADER_PADDING;
 }
 
 void Client::CheckQueuedPackets(){
-	for(char *packet : m_QueuedPackets){
-		WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - 10);
+	for(unsigned char *packet : m_QueuedPackets){
+		WriteRequestPart *part = PacketToWriteRequest(packet);
 		--part->refCount;
 		SendPacket(packet);
 	}
@@ -453,14 +518,15 @@ void Client::CheckQueuedPackets(){
 	m_QueuedPackets.clear();
 }
 
-void Client::SendPacket(char *packet){
+void Client::SendPacket(unsigned char *packet){
 	if(m_bClosing || m_bDestroyed) return;
 
-	WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - 10);
+	WriteRequestPart *part = PacketToWriteRequest(packet);
 	++part->refCount;
 	
 	
 	if(std::this_thread::get_id() != g_WSUV_MainThreadID){
+		if(m_bCompressionEnabled) part->Compress();
 		m_QueuedPackets.push_back(packet);
 		return;
 	}
@@ -477,17 +543,25 @@ void Client::SendPacket(char *packet){
 		return;
 	}
 
+	if(m_bCompressionEnabled) part->Compress();
+
 	WriteRequest *req = new WriteRequest;
 	req->part = part;
 	req->client = this;
 
-	uv_write(&req->req, (uv_stream_t*) &m_Socket, &part->buf, 1, [](uv_write_t* req2, int status){
+	
+
+	uv_buf_t *buf = m_bCompressionEnabled && part->useCompression ? &part->cbuf : &part->buf;
+	
+
+	uv_write(&req->req, (uv_stream_t*) &m_Socket, buf, 1, [](uv_write_t* req2, int status){
 		WriteRequest *req = (WriteRequest *) req2;
 		if(status < 0){
 			req->client->Destroy();
 		}
 
 		if(--req->part->refCount == 0){
+			delete[] req->part->compressed;
 			delete[] (char*)req->part;
 		}
 		delete req;
@@ -558,8 +632,8 @@ void Client::SendRaw(const char *data, size_t len, bool ownsPointer){
 	});
 }
 
-void Client::DestroyPacket(char *packet){
-	WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - 10);
+void Client::DestroyPacket(unsigned char *packet){
+	WriteRequestPart *part = PacketToWriteRequest(packet);
 	if(--part->refCount == 0){
 		delete[] (char*)part;
 	}

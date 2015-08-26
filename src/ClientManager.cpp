@@ -40,7 +40,7 @@ std::vector<Client*> g_WSUV_Clients;
 void ClientManager::Init(int port) {
 	//printf("Running libuv version %s\n", uv_version_string());
 	g_WSUV_MainThreadID = std::this_thread::get_id();
-	
+
 #ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);
 #endif
@@ -50,7 +50,7 @@ void ClientManager::Init(int port) {
 	uv_tcp_init(&g_Loop, &g_Server);
 	struct sockaddr_in addr;
 	uv_ip4_addr("0.0.0.0", port, &addr);
-	uv_tcp_nodelay(&g_Server, true);
+	uv_tcp_nodelay(&g_Server, (int) true);
 	if(uv_tcp_bind(&g_Server, (const struct sockaddr*) &addr, 0) != 0){
 		puts("wsuv: Couldn't bind tcp socket");
 		exit(1);
@@ -73,9 +73,7 @@ void ClientManager::OnConnection(uv_stream_t* server, int status){
 
 	uv_tcp_init(&g_Loop, client);
 	if(uv_accept(server, (uv_stream_t*) client) == 0){
-		// We have to turn off the delay, because it seems that when you open a server
-		// on port 80, it's enabled automatically, WTF?
-		uv_tcp_nodelay(client, true);
+		uv_tcp_nodelay(client, (int) true);
 		uv_read_start((uv_stream_t*) client, AllocBuffer, OnSocketData);
 	}else{
 		uv_close((uv_handle_t*) client, [](uv_handle_t* handle){
@@ -93,10 +91,9 @@ void ClientManager::OnSocketData(uv_stream_t* stream, ssize_t nread, const uv_bu
 	Client *client = (Client*) stream->data;
 	if(nread < 0){
 		client->Destroy();
-		return;
 	}else{
 		if(nread != 0){
-			client->OnSocketData(buf->base, (size_t) nread);
+			client->OnSocketData((unsigned char*)buf->base, (size_t) nread); //-V595
 		}
 	}
 

@@ -27,6 +27,9 @@ SOFTWARE.
 #ifndef WSUV_CLIENTMANAGER_H
 #define WSUV_CLIENTMANAGER_H
 
+#include "uv.h"
+
+
 // Extend the class Client, and change this to the new name
 #define WSUV_ClientClass EchoClient
 // Also add its include in here:
