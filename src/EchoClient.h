@@ -29,8 +29,6 @@ SOFTWARE.
 #define WSUV_ECHOCLIENT_H
 
 #include "Client.h"
-#include <cstdio>
-#include <cstring>
 
 class EchoClient : public Client {
 	void OnInit() override {};

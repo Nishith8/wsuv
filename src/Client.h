@@ -27,10 +27,6 @@ SOFTWARE.
 #ifndef WSUV_CLIENT_H
 #define WSUV_CLIENT_H
 
-#include <cstdint>
-#include <vector>
-#include "uv.h"
-
 // Note about multi threading:
 // This isn't thread-safe if multiple threads can manipulate the same packet at the same time,
 // or if multiple threads can send to the same client at the same time.

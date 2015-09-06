@@ -26,8 +26,6 @@ SOFTWARE.
 */
 
 #include "Client.h"
-#include <thread>
-#include <cstring>
 #include "sha1.h"
 #include "base64.h"
 #include "ClientManager.h"
