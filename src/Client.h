@@ -86,8 +86,6 @@ private:
 	bool m_bClosing;
 	bool m_bDestroyed;
 	bool m_bHasCompletedHandshake;
-	bool m_bCompressionEnabled = false;
-	bool m_bFrameHasCompression = false;
 	std::vector<DataFrame> m_Frames;
 	std::vector<unsigned char*> m_QueuedPackets;
 	size_t m_iBufferPos;

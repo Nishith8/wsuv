@@ -271,11 +271,6 @@ void Client::OnSocketData(unsigned char *data, size_t len){
 			SendRaw(EXPAND_LITERAL("Sec-WebSocket-Version: 13\r\n"));
 		}
 
-		if(m_bCompressionEnabled) {
-			SendRaw(EXPAND_LITERAL("Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover\r\n"));
-		}
-
-
 		SendRaw(EXPAND_LITERAL("Sec-WebSocket-Accept: "));
 		SendRaw(allocatedHash, solvedHash.size(), true);
 		SendRaw(EXPAND_LITERAL("\r\n\r\n"));
@@ -296,25 +291,18 @@ void Client::OnSocketData(unsigned char *data, size_t len){
 	}
 	
 	// Websockets
-		
+	
 	for(;;){
 		// Not enough to read the header
 		if(m_iBufferPos < 2) return;
-
+		
 		auto &header = *(DataFrameHeader*) m_Buffer;
-			
-		if(m_bCompressionEnabled) {
-			if(m_Frames.empty()) {
-				m_bFrameHasCompression = header.rsv1();
-				printf("Frame has compression: %d\n", (int)m_bFrameHasCompression);
-			}
-		} else {
-			if(header.rsv1()) {
-				Destroy();
-				return;
-			}
+		
+		if(header.rsv1()) {
+			Destroy();
+			return;
 		}
-
+		
 		if(header.rsv2() || header.rsv3()){
 			Destroy();
 			return;
@@ -411,15 +399,8 @@ void Client::ProcessDataFrame(uint8_t opcode, const unsigned char *rdata, size_t
 	const unsigned char *data = nullptr;
 
 	size_t len;
-	if(m_bFrameHasCompression) {
-		return;
-		//FIXME
-		//printf("Decompressed from %d to %d\n", (int)rlen, (int)len);
-
-	} else {
-		data = rdata;
-		len = rlen;
-	}
+	data = rdata;
+	len = rlen;
 
 	if(opcode == 9){
 		// Ping
@@ -475,8 +456,6 @@ unsigned char *Client::CreatePacket(size_t len, uint8_t opcode){
 	req->refCount = 1;
 	req->headerLen = headerLen;
 	req->packetLen = len;
-	req->compressed = nullptr;
-	req->useCompression = false;
 
 	auto &header = *(DataFrameHeader*)headerStart;
 	header.fin(true);
@@ -526,7 +505,6 @@ void Client::SendPacket(unsigned char *packet){
 	
 	
 	if(std::this_thread::get_id() != g_WSUV_MainThreadID){
-		if(m_bCompressionEnabled) part->Compress();
 		m_QueuedPackets.push_back(packet);
 		return;
 	}
@@ -543,25 +521,17 @@ void Client::SendPacket(unsigned char *packet){
 		return;
 	}
 
-	if(m_bCompressionEnabled) part->Compress();
-
 	WriteRequest *req = new WriteRequest;
 	req->part = part;
 	req->client = this;
-
 	
-
-	uv_buf_t *buf = m_bCompressionEnabled && part->useCompression ? &part->cbuf : &part->buf;
-	
-
-	uv_write(&req->req, (uv_stream_t*) &m_Socket, buf, 1, [](uv_write_t* req2, int status){
+	uv_write(&req->req, (uv_stream_t*) &m_Socket, &part->buf, 1, [](uv_write_t* req2, int status){
 		WriteRequest *req = (WriteRequest *) req2;
 		if(status < 0){
 			req->client->Destroy();
 		}
 
 		if(--req->part->refCount == 0){
-			delete[] req->part->compressed;
 			delete[] (char*)req->part;
 		}
 		delete req;

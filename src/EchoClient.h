@@ -33,9 +33,9 @@ SOFTWARE.
 #include <cstring>
 
 class EchoClient : public Client {
-	void OnInit(){};
-	void OnDestroy(){};
-	void OnData(const char *data, size_t length){
+	void OnInit() override {};
+	void OnDestroy() override {};
+	void OnData(const unsigned char *data, size_t length) override {
 		auto packet = CreatePacket(length);
 		memcpy(packet, data, length);
 		SendPacket(packet);
