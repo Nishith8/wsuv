@@ -84,16 +84,12 @@ struct WriteRequestPart {
 
 extern std::thread::id g_WSUV_MainThreadID;
 extern std::vector<Client*> g_WSUV_Clients;
+extern SSL_CTX *g_WSUUV_SSLContext;
 
 
 static_assert(sizeof(DataFrameHeader) == 2, "DataFrame basic header must have 2 bytes");
 
 Client::Client(){
-	m_iBufferPos = 0;
-	m_bHasCompletedHandshake = false;
-	m_bClosing = false;
-	m_bDestroyed = false;
-	
 	for(size_t i = 0; i < g_WSUV_Clients.size(); ++i){
 		if(g_WSUV_Clients[i] != nullptr) continue;
 		g_WSUV_Clients[i] = this;
@@ -108,12 +104,6 @@ Client::Client(){
 Client::~Client(){
 	m_bClosing = true;
 	m_bDestroyed = true;
-	
-	for(size_t i = 0; i < g_WSUV_Clients.size(); ++i){
-		if(g_WSUV_Clients[i] != this) continue;
-		g_WSUV_Clients[i] = nullptr;
-		break;
-	}
 	
 	for(auto &d : m_Frames){
 		delete[] d.data;
@@ -133,6 +123,12 @@ void Client::Destroy(){
 	if(m_bDestroyed) return;
 	m_bDestroyed = true;
 	
+#ifndef _WIN32
+	if(m_bSecure){
+		SSL_free(m_SSL);
+	}
+#endif
+	
 	OnDestroy();
 	
 	uv_close((uv_handle_t*) &m_Socket, [](uv_handle_t* handle){
@@ -141,10 +137,113 @@ void Client::Destroy(){
 	});
 }
 
+#ifndef _WIN32
+void Client::HandleSSLError(int err){
+	if(err == SSL_ERROR_WANT_WRITE){
+		FlushSSLWrite();
+	}else if(err == SSL_ERROR_WANT_READ){
+		// It's async
+	}else{
+#ifdef DEBUG
+		ERR_print_errors_fp(stdout);
+		__builtin_trap();
+#endif
+		Destroy();
+	}
+}
+
+void Client::FlushSSLWrite(){
+FlushAgain:
+	char *buf = new char[4096];
+	auto res = BIO_read(m_SSL_write, buf, 4096);
+	if(res > 0){
+		WriteRaw(buf, res, true);
+		goto FlushAgain;
+	}else{
+		delete[] buf;
+		
+		// Error?
+		if(!BIO_should_retry(m_SSL_write)){
+#ifdef DEBUG
+			puts("FlushSSLWrite failed, killing connection");
+#endif
+			Destroy();
+		}
+	}
+}
+
+#endif
 
 void Client::OnSocketData(unsigned char *data, size_t len){
-	if(m_bClosing || m_bDestroyed) return;
+	if(m_bClosing || m_bDestroyed || len == 0) return;
+	
+	// Sniff if we're using SSL
+	if(m_bFirstPacket){
+		m_bFirstPacket = false;
+#ifndef _WIN32
+		if(data[0] == 0x16 || data[0] == 0x80){
+#ifdef DEBUG
+			printf("SSL connection\n");
+#endif
+			
+			if(g_WSUUV_SSLContext == nullptr){
+#ifdef DEBUG
+				printf("No SSL context, rejecting client\n");
+#endif
+				Destroy();
+				return;
+			}
+			
+			m_bSecure = true;
+			m_bDoingSSLHandshake = true;
+			m_SSL = SSL_new(g_WSUUV_SSLContext);
+			m_SSL_read = BIO_new(BIO_s_mem());
+			m_SSL_write = BIO_new(BIO_s_mem());
+			
+			SSL_set_bio(m_SSL, m_SSL_read, m_SSL_write);
+			SSL_set_accept_state(m_SSL);
+		}
+#endif
+	}
+	
+	
+#ifndef _WIN32
+	if(m_bSecure){
+		BIO_write(m_SSL_read, data, len);
+		
+		/*
+		if(m_bDoingSSLHandshake){
+			auto res = SSL_do_handshake(m_SSL);
+			if(res > 0){
+				m_bDoingSSLHandshake = false;
+			} else {
+				HandleSSLError(SSL_get_error(m_SSL));
+				return;
+			}
+		}
+		
+		assert(SSL_is_init_finished(m_SSL));
+		*/
+		
+		unsigned char buf[2048];
+		for(;;){
+			auto res = SSL_read(m_SSL, buf, sizeof(buf));
+			if(res > 0){
+				OnData(buf, res);
+			}else{
+				HandleSSLError(SSL_get_error(m_SSL, res));
+				break;
+			}
+		}
+		
+		return;
+	}
+#endif
+	
+	OnData(data, len);
+}
 
+void Client::OnData(unsigned char *data, size_t len){
 	// This should still give us a byte to put a null terminator
 	// during the http phase
 	if(m_iBufferPos + len >= sizeof(m_Buffer)){
@@ -251,7 +350,7 @@ void Client::OnSocketData(unsigned char *data, size_t len){
 #define EXPAND_LITERAL(x) x, strlen(x)
 
 		if(badHeader) {
-			SendRawAndDestroy(EXPAND_LITERAL("HTTP/1.1 400 Bad Request\r\n\r\n"));
+			WriteAndDestroy(EXPAND_LITERAL("HTTP/1.1 400 Bad Request\r\n\r\n"));
 			return;
 		}
 
@@ -262,16 +361,16 @@ void Client::OnSocketData(unsigned char *data, size_t len){
 		auto allocatedHash = new char[solvedHash.size()];
 		memcpy(allocatedHash, solvedHash.data(), solvedHash.size());
 
-		SendRaw(EXPAND_LITERAL("HTTP/1.1 101 Switching Protocols\r\n"));
-		SendRaw(EXPAND_LITERAL("Upgrade: websocket\r\n"));
-		SendRaw(EXPAND_LITERAL("Connection: Upgrade\r\n"));
+		Write(EXPAND_LITERAL("HTTP/1.1 101 Switching Protocols\r\n"));
+		Write(EXPAND_LITERAL("Upgrade: websocket\r\n"));
+		Write(EXPAND_LITERAL("Connection: Upgrade\r\n"));
 		if(sendMyVersion) {
-			SendRaw(EXPAND_LITERAL("Sec-WebSocket-Version: 13\r\n"));
+			Write(EXPAND_LITERAL("Sec-WebSocket-Version: 13\r\n"));
 		}
 
-		SendRaw(EXPAND_LITERAL("Sec-WebSocket-Accept: "));
-		SendRaw(allocatedHash, solvedHash.size(), true);
-		SendRaw(EXPAND_LITERAL("\r\n\r\n"));
+		Write(EXPAND_LITERAL("Sec-WebSocket-Accept: "));
+		Write(allocatedHash, solvedHash.size(), true);
+		Write(EXPAND_LITERAL("\r\n\r\n"));
 
 		if(!sendMyVersion) {
 			m_bHasCompletedHandshake = true;
@@ -501,7 +600,6 @@ void Client::SendPacket(unsigned char *packet){
 	WriteRequestPart *part = PacketToWriteRequest(packet);
 	++part->refCount;
 	
-	
 	if(std::this_thread::get_id() != g_WSUV_MainThreadID){
 		m_QueuedPackets.push_back(packet);
 		return;
@@ -511,14 +609,20 @@ void Client::SendPacket(unsigned char *packet){
 	//printf("Sending packet with length %d\n", (int) part->buf.len);
 
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){
-		if(--part->refCount == 0){
-			delete[] (char*)part;
-		}
-
+		if(--part->refCount == 0) delete[] (char*)part;
 		Destroy();
 		return;
 	}
-
+	
+#ifndef _WIN32
+	if(m_bSecure){
+		SSL_write(m_SSL, part->buf.base, part->buf.len);
+		FlushSSLWrite();
+		if(--part->refCount == 0) delete[] (char*)part;
+		return;
+	}
+#endif
+	
 	WriteRequest *req = new WriteRequest;
 	req->part = part;
 	req->client = this;
@@ -536,7 +640,7 @@ void Client::SendPacket(unsigned char *packet){
 	});
 }
 
-void Client::SendRawAndDestroy(const char *data, size_t len){
+void Client::WriteAndDestroy(const char *data, size_t len){
 	if(m_bClosing || m_bDestroyed) return;
 	
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){
@@ -564,7 +668,20 @@ void Client::SendRawAndDestroy(const char *data, size_t len){
 	});
 }
 
-void Client::SendRaw(const char *data, size_t len, bool ownsPointer){
+void Client::Write(const char *data, size_t len, bool ownsPointer){
+#ifndef _WIN32
+	if(m_bSecure){
+		SSL_write(m_SSL, data, len);
+		FlushSSLWrite();
+		if(ownsPointer) delete[] data;
+		return;
+	}
+#endif
+	
+	WriteRaw(data, len, ownsPointer);
+}
+
+void Client::WriteRaw(const char *data, size_t len, bool ownsPointer){
 	if(m_bClosing || m_bDestroyed) return;
 	
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){

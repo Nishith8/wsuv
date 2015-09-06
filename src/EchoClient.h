@@ -34,6 +34,7 @@ class EchoClient : public Client {
 	void OnInit() override {};
 	void OnDestroy() override {};
 	void OnData(const unsigned char *data, size_t length) override {
+		printf("> %.*s\n", (int) length, data);
 		auto packet = CreatePacket(length);
 		memcpy(packet, data, length);
 		SendPacket(packet);

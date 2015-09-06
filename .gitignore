@@ -184,3 +184,9 @@ FakesAssemblies/
 
 src/.sconsign.dblite
 src/echo_client
+
+src/server.crt
+
+src/server.csr
+
+src/server.key

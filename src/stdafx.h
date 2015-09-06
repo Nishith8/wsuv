@@ -11,3 +11,8 @@
 
 #include "uv.h"
 
+#ifndef _WIN32
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/buffer.h>
+#endif

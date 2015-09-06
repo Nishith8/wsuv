@@ -50,6 +50,11 @@ public:
 	// You then have to send it to clients using SendPacket
 	// Then you have to destroy it with DestroyPacket.
 	static unsigned char *CreatePacket(size_t len, uint8_t opcode = 2);
+	static unsigned char *CreatePacket(const std::string &str){
+		auto packet = CreatePacket(str.size());
+		memcpy(packet, str.data(), str.size());
+		return packet;
+	}
 	
 	// Doesn't actually destroy it, only when it's sent. Call it immediatelly after CreatePacket and SendPacket
 	// You can't SendPacket if you've already destroyed it with this.
@@ -73,18 +78,33 @@ private:
 	};
 
 	void OnSocketData(unsigned char *data, size_t len);
-	void SendRawAndDestroy(const char *data, size_t len);
-	void SendRaw(const char *data, size_t len, bool ownsPointer = false);
+	void OnData(unsigned char *data, size_t len);
+	void WriteAndDestroy(const char *data, size_t len);
+	void Write(const char *data, size_t len, bool ownsPointer = false);
+	void WriteRaw(const char *data, size_t len, bool ownsPointer);
 	void ProcessDataFrame(uint8_t opcode, const unsigned char *data, size_t len);
 	void CheckQueuedPackets();
+	
+#ifndef _WIN32
+	void HandleSSLError(int err);
+	void FlushSSLWrite();
+#endif
 
 	uv_tcp_t m_Socket;
-	bool m_bClosing;
-	bool m_bDestroyed;
-	bool m_bHasCompletedHandshake;
+	bool m_bFirstPacket = true;
+#ifndef _WIN32
+	bool m_bSecure = false;
+	bool m_bDoingSSLHandshake = false;
+	SSL *m_SSL;
+	BIO *m_SSL_read;
+	BIO *m_SSL_write;
+#endif
+	bool m_bClosing = false;
+	bool m_bDestroyed = false;
+	bool m_bHasCompletedHandshake = false;
 	std::vector<DataFrame> m_Frames;
 	std::vector<unsigned char*> m_QueuedPackets;
-	size_t m_iBufferPos;
+	size_t m_iBufferPos = 0;
 	unsigned char m_Buffer[16 * 1024]; // Increase the size if needed
 
 	friend ClientManager;

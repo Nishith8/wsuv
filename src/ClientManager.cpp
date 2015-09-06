@@ -37,12 +37,55 @@ namespace {
 std::thread::id g_WSUV_MainThreadID;
 std::vector<Client*> g_WSUV_Clients;
 
+#ifndef _WIN32
+SSL_CTX *g_WSUUV_SSLContext;
+#endif
+
 void ClientManager::Init(int port) {
 	//printf("Running libuv version %s\n", uv_version_string());
 	g_WSUV_MainThreadID = std::this_thread::get_id();
 
 #ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);
+	SSL_library_init();
+	OpenSSL_add_all_algorithms();
+	SSL_load_error_strings();
+	ERR_load_crypto_strings();
+	g_WSUUV_SSLContext = SSL_CTX_new(SSLv23_server_method());
+	
+	int r = 0;
+	r = SSL_CTX_set_cipher_list(g_WSUUV_SSLContext, "ALL:!EXPORT:!LOW");
+	if(r != 1) {
+		ERR_print_errors_fp(stdout);
+		g_WSUUV_SSLContext = nullptr;
+	}else{
+		SSL_CTX_set_verify(g_WSUUV_SSLContext, SSL_VERIFY_NONE, [](int ok, X509_STORE_CTX* ctx){ return 1; });
+
+		r = SSL_CTX_use_certificate_file(g_WSUUV_SSLContext, "server.crt", SSL_FILETYPE_PEM);
+		if(r != 1) {
+			ERR_print_errors_fp(stdout);
+			g_WSUUV_SSLContext = nullptr;
+		}else{
+			r = SSL_CTX_use_PrivateKey_file(g_WSUUV_SSLContext, "server.key", SSL_FILETYPE_PEM);
+			if(r != 1) {
+				ERR_print_errors_fp(stdout);
+				g_WSUUV_SSLContext = nullptr;
+			}else{
+				r = SSL_CTX_check_private_key(g_WSUUV_SSLContext);
+				if(r != 1) {
+					ERR_print_errors_fp(stdout);
+					g_WSUUV_SSLContext = nullptr;
+				}
+			}
+		}
+	}
+	
+	if(r == 1){
+		puts("SSL setup successfully");
+	}else{
+		puts("SSL setup failing, rejecting SSL clients");
+	}
+	
 #endif
 
 	uv_loop_init(&g_Loop);
@@ -113,4 +156,6 @@ void ClientManager::Run(){
 void ClientManager::Destroy(){
 	uv_close((uv_handle_t*) &g_Server, nullptr);
 	uv_loop_close(&g_Loop);
+	EVP_cleanup();
+	ERR_free_strings();
 }
