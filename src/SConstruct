@@ -1,0 +1,8 @@
+
+
+Program(
+	'echo_client',
+	Glob('*.c') + Glob('*.cpp'),
+	CXXFLAGS = ["-std=c++11"],
+	LIBS = ['uv', 'crypto', 'ssl']
+)
