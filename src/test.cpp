@@ -1,3 +1,4 @@
+#include "stdafx.h"
 /*
 
 The MIT License (MIT)
@@ -29,7 +30,7 @@ SOFTWARE.
 #include <unistd.h>
 
 int main(){
-	ClientManager::Init(443);
+	ClientManager::Init(2000);
 	for(;;){
 		ClientManager::Run();
 		usleep(1000);
