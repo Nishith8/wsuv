@@ -78,7 +78,7 @@ private:
 	};
 
 	void OnSocketData(unsigned char *data, size_t len);
-	void OnData(unsigned char *data, size_t len);
+	void OnSocketData2(unsigned char *data, size_t len);
 	void WriteAndDestroy(const char *data, size_t len);
 	void Write(const char *data, size_t len, bool ownsPointer = false);
 	void WriteRaw(const char *data, size_t len, bool ownsPointer);
@@ -91,13 +91,13 @@ private:
 #endif
 
 	uv_tcp_t m_Socket;
-	bool m_bFirstPacket = true;
+	bool m_bWaitingForFirstPacket = true;
 #ifndef _WIN32
 	bool m_bSecure = false;
 	bool m_bDoingSSLHandshake = false;
-	SSL *m_SSL;
-	BIO *m_SSL_read;
-	BIO *m_SSL_write;
+	SSL *m_SSL = nullptr;
+	BIO *m_SSL_read = nullptr;
+	BIO *m_SSL_write = nullptr;
 #endif
 	bool m_bClosing = false;
 	bool m_bDestroyed = false;

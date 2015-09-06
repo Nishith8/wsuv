@@ -86,6 +86,14 @@ extern std::thread::id g_WSUV_MainThreadID;
 extern std::vector<Client*> g_WSUV_Clients;
 extern SSL_CTX *g_WSUUV_SSLContext;
 
+namespace {
+	
+	WriteRequestPart* PacketToWriteRequest(unsigned char *packet) {
+		return (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - HEADER_PADDING);
+	}
+
+}
+
 
 static_assert(sizeof(DataFrameHeader) == 2, "DataFrame basic header must have 2 bytes");
 
@@ -102,6 +110,12 @@ Client::Client(){
 }
 
 Client::~Client(){
+	for(size_t i = 0; i < g_WSUV_Clients.size(); ++i){
+		if(g_WSUV_Clients[i] != this) continue;
+		g_WSUV_Clients[i] = nullptr;
+		break;
+	}
+	
 	m_bClosing = true;
 	m_bDestroyed = true;
 	
@@ -110,10 +124,8 @@ Client::~Client(){
 	}
 
 	for(unsigned char *packet : m_QueuedPackets){
-		WriteRequestPart *part = (WriteRequestPart*)(packet - sizeof(WriteRequestPart)-HEADER_PADDING);
-		if(--part->refCount == 0){
-			delete part;
-		}
+		WriteRequestPart *part = PacketToWriteRequest(packet);
+		if(--part->refCount == 0) delete[] (char*)part;
 	}
 }
 
@@ -126,6 +138,9 @@ void Client::Destroy(){
 #ifndef _WIN32
 	if(m_bSecure){
 		SSL_free(m_SSL);
+		m_SSL = nullptr;
+		m_SSL_write = nullptr;
+		m_SSL_read = nullptr;
 	}
 #endif
 	
@@ -154,6 +169,7 @@ void Client::HandleSSLError(int err){
 
 void Client::FlushSSLWrite(){
 FlushAgain:
+	if(m_bClosing || m_bDestroyed) return;
 	char *buf = new char[4096];
 	auto res = BIO_read(m_SSL_write, buf, 4096);
 	if(res > 0){
@@ -178,8 +194,8 @@ void Client::OnSocketData(unsigned char *data, size_t len){
 	if(m_bClosing || m_bDestroyed || len == 0) return;
 	
 	// Sniff if we're using SSL
-	if(m_bFirstPacket){
-		m_bFirstPacket = false;
+	if(m_bWaitingForFirstPacket){
+		m_bWaitingForFirstPacket = false;
 #ifndef _WIN32
 		if(data[0] == 0x16 || data[0] == 0x80){
 #ifdef DEBUG
@@ -227,23 +243,27 @@ void Client::OnSocketData(unsigned char *data, size_t len){
 		
 		unsigned char buf[2048];
 		for(;;){
+			if(m_bClosing || m_bDestroyed) break;
 			auto res = SSL_read(m_SSL, buf, sizeof(buf));
 			if(res > 0){
-				OnData(buf, res);
+				OnSocketData2(buf, res);
 			}else{
 				HandleSSLError(SSL_get_error(m_SSL, res));
 				break;
 			}
 		}
 		
+		FlushSSLWrite();
 		return;
 	}
 #endif
 	
-	OnData(data, len);
+	OnSocketData2(data, len);
 }
 
-void Client::OnData(unsigned char *data, size_t len){
+void Client::OnSocketData2(unsigned char *data, size_t len){
+	if(m_bClosing || m_bDestroyed) return;
+	
 	// This should still give us a byte to put a null terminator
 	// during the http phase
 	if(m_iBufferPos + len >= sizeof(m_Buffer)){
@@ -372,15 +392,13 @@ void Client::OnData(unsigned char *data, size_t len){
 		Write(allocatedHash, solvedHash.size(), true);
 		Write(EXPAND_LITERAL("\r\n\r\n"));
 
-		if(!sendMyVersion) {
-			m_bHasCompletedHandshake = true;
+		m_bHasCompletedHandshake = true;
 
-			// Reset buffer, notice that this assumes that the browser won't send anything before
-			// waiting for the header response to come.
-			m_iBufferPos = 0;
+		// Reset buffer, notice that this assumes that the browser won't send anything before
+		// waiting for the header response to come.
+		m_iBufferPos = 0;
 
-			OnInit();
-		}
+		OnInit();
 
 #undef EXPAND_LITERAL
 
@@ -520,10 +538,6 @@ void Client::ProcessDataFrame(uint8_t opcode, const unsigned char *rdata, size_t
 	}
 }
 
-inline WriteRequestPart* PacketToWriteRequest(unsigned char *packet) {
-	return (WriteRequestPart*)(packet - sizeof(WriteRequestPart) - HEADER_PADDING);
-}
-
 unsigned char *Client::CreatePacket(size_t len, uint8_t opcode){
 	// Creates the packet in this format:
 	// [WriteRequestPart] ...[Padding if needed] [DataFrameHeader] [data]
@@ -585,22 +599,28 @@ unsigned char *Client::CreatePacket(size_t len, uint8_t opcode){
 }
 
 void Client::CheckQueuedPackets(){
-	for(unsigned char *packet : m_QueuedPackets){
+	if(m_bClosing || m_bDestroyed || m_bWaitingForFirstPacket) return;
+	
+	if(m_QueuedPackets.size() > 0) printf("%d queued packets\n", int(m_QueuedPackets.size()));
+	std::vector<unsigned char*> cpy;
+	std::swap(cpy, m_QueuedPackets);
+	for(unsigned char *packet : cpy){
 		WriteRequestPart *part = PacketToWriteRequest(packet);
-		--part->refCount;
 		SendPacket(packet);
+		if(--part->refCount == 0) delete[] (char*)part;
 	}
-
-	m_QueuedPackets.clear();
 }
 
 void Client::SendPacket(unsigned char *packet){
+	assert(packet != nullptr);
 	if(m_bClosing || m_bDestroyed) return;
-
+	
 	WriteRequestPart *part = PacketToWriteRequest(packet);
+	assert(part != nullptr);
+	
 	++part->refCount;
 	
-	if(std::this_thread::get_id() != g_WSUV_MainThreadID){
+	if(std::this_thread::get_id() != g_WSUV_MainThreadID || m_bWaitingForFirstPacket){
 		m_QueuedPackets.push_back(packet);
 		return;
 	}
@@ -641,7 +661,15 @@ void Client::SendPacket(unsigned char *packet){
 }
 
 void Client::WriteAndDestroy(const char *data, size_t len){
-	if(m_bClosing || m_bDestroyed) return;
+	if(m_bClosing || m_bDestroyed || m_bWaitingForFirstPacket) return;
+	
+#ifndef _WIN32
+	if(m_bSecure){
+		//FIXME
+		Destroy();
+		return;
+	}
+#endif
 	
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){
 		Destroy();
@@ -669,6 +697,8 @@ void Client::WriteAndDestroy(const char *data, size_t len){
 }
 
 void Client::Write(const char *data, size_t len, bool ownsPointer){
+	if(m_bClosing || m_bDestroyed || m_bWaitingForFirstPacket) return;
+	
 #ifndef _WIN32
 	if(m_bSecure){
 		SSL_write(m_SSL, data, len);
