@@ -82,7 +82,7 @@ struct WriteRequestPart {
 	int refCount;
 };
 
-extern std::thread::id g_WSUV_MainThreadID;
+
 extern std::vector<Client*> g_WSUV_Clients;
 extern SSL_CTX *g_WSUUV_SSLContext;
 
@@ -620,7 +620,7 @@ void Client::SendPacket(unsigned char *packet){
 	
 	++part->refCount;
 	
-	if(std::this_thread::get_id() != g_WSUV_MainThreadID || m_bWaitingForFirstPacket){
+	if(m_bWaitingForFirstPacket){
 		m_QueuedPackets.push_back(packet);
 		return;
 	}

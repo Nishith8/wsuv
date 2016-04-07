@@ -27,16 +27,6 @@ SOFTWARE.
 #ifndef WSUV_CLIENT_H
 #define WSUV_CLIENT_H
 
-// Note about multi threading:
-// This isn't thread-safe if multiple threads can manipulate the same packet at the same time,
-// or if multiple threads can send to the same client at the same time.
-// This means you can only use it if one thread "owns" the client at a time.
-
-// If you wanna make this thread safe, then you have to:
-// - Add a mutex to protect m_QueuedPackets
-// - Make m_bClosing and m_bDestroyed atomic (and change the code according to handle that, using load and compare_and_exchange)
-// - Make refcount atomic in the WriteRequest struct
-// Maybe more stuff, but anyways, you shouldn't do that.
 
 class ClientManager;
 class Client {

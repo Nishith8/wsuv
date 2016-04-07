@@ -33,7 +33,6 @@ namespace {
 	uv_tcp_t g_Server;
 };
 
-std::thread::id g_WSUV_MainThreadID;
 std::vector<Client*> g_WSUV_Clients;
 extern uv_loop_t g_Loop;
 
@@ -43,7 +42,6 @@ SSL_CTX *g_WSUUV_SSLContext;
 
 void ClientManager::Init(int port) {
 	//printf("Running libuv version %s\n", uv_version_string());
-	g_WSUV_MainThreadID = std::this_thread::get_id();
 
 #ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);
