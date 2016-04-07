@@ -207,10 +207,6 @@ void Client::OnSocketData(unsigned char *data, size_t len){
 		m_bWaitingForFirstPacket = false;
 #ifndef _WIN32
 		if(data[0] == 0x16 || data[0] == 0x80){
-#ifdef DEBUG
-			printf("SSL connection\n");
-#endif
-			
 			if(g_WSUUV_SSLContext == nullptr){
 #ifdef DEBUG
 				printf("No SSL context, rejecting client\n");
@@ -610,7 +606,6 @@ unsigned char *Client::CreatePacket(size_t len, uint8_t opcode){
 void Client::CheckQueuedPackets(){
 	if(m_bClosing || m_bDestroyed || m_bWaitingForFirstPacket) return;
 	
-	if(m_QueuedPackets.size() > 0) printf("%d queued packets\n", int(m_QueuedPackets.size()));
 	std::vector<unsigned char*> cpy;
 	std::swap(cpy, m_QueuedPackets);
 	for(unsigned char *packet : cpy){
@@ -633,9 +628,7 @@ void Client::SendPacket(unsigned char *packet){
 		m_QueuedPackets.push_back(packet);
 		return;
 	}
-
-
-	//printf("Sending packet with length %d\n", (int) part->buf.len);
+	
 
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){
 		if(--part->refCount == 0) delete[] (char*)part;
