@@ -137,7 +137,10 @@ void ClientManager::AllocBuffer(uv_handle_t* handle, size_t suggested_size, uv_b
 void ClientManager::OnSocketData(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf){
 	Client *client = (Client*) stream->data;
 	if(nread < 0){
-		client->Destroy();
+		std::stringstream ss;
+		ss << "uv_error_" << uv_err_name(nread);
+		auto str = ss.str();
+		client->Destroy(str.c_str());
 	}else{
 		if(nread != 0){
 			client->OnSocketData((unsigned char*)buf->base, (size_t) nread); //-V595

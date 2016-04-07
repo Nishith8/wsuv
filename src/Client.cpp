@@ -129,11 +129,17 @@ Client::~Client(){
 	}
 }
 
-void Client::Destroy(){
+void Client::Destroy(const char *reason){
 	m_bClosing = true;
 
 	if(m_bDestroyed) return;
 	m_bDestroyed = true;
+	
+	if(reason != nullptr){
+#ifdef DEBUG
+		printf("Client disconnected: %s\n", reason);
+#endif
+	}
 	
 #ifndef _WIN32
 	if(m_bSecure){
@@ -172,7 +178,7 @@ void Client::HandleSSLError(int err){
 		ERR_print_errors_fp(stdout);
 		__builtin_trap();
 #endif
-		Destroy();
+		Destroy("ssl_error_1");
 	}
 }
 
@@ -187,12 +193,15 @@ FlushAgain:
 	}else{
 		delete[] buf;
 		
-		// Error?
-		if(!BIO_should_retry(m_SSL_write)){
-#ifdef DEBUG
-			puts("FlushSSLWrite failed, killing connection");
-#endif
-			Destroy();
+		bool shouldRetry = BIO_should_retry(m_SSL_write);
+		
+		if(!shouldRetry){
+			// Connection closed normally
+			if(res == 0){
+				Destroy("ssl_close");
+			}else{
+				HandleSSLError(SSL_get_error(m_SSL, res));
+			}
 		}
 	}
 }
@@ -211,7 +220,7 @@ void Client::OnSocketData(unsigned char *data, size_t len){
 #ifdef DEBUG
 				printf("No SSL context, rejecting client\n");
 #endif
-				Destroy();
+				Destroy("no_ssl_support");
 				return;
 			}
 			
@@ -272,7 +281,7 @@ void Client::OnSocketData2(unsigned char *data, size_t len){
 	// This should still give us a byte to put a null terminator
 	// during the http phase
 	if(m_iBufferPos + len >= sizeof(m_Buffer)){
-		Destroy();
+		Destroy("buffer_overflowed");
 		return;
 	}
 
@@ -419,12 +428,12 @@ void Client::OnSocketData2(unsigned char *data, size_t len){
 		auto &header = *(DataFrameHeader*) m_Buffer;
 		
 		if(header.rsv1()) {
-			Destroy();
+			Destroy("used_rsv1");
 			return;
 		}
 		
 		if(header.rsv2() || header.rsv3()){
-			Destroy();
+			Destroy("used_rsv23");
 			return;
 		}
 
@@ -505,7 +514,7 @@ void Client::OnSocketData2(unsigned char *data, size_t len){
 					totalLen += frame.len;
 				}
 
-				if(totalLen >= 16 * 1024) Destroy();
+				if(totalLen >= 16 * 1024) Destroy("too_many_frames");
 			}
 			
 		}
@@ -533,7 +542,7 @@ void Client::ProcessDataFrame(uint8_t opcode, const unsigned char *rdata, size_t
 
 	if(opcode == 8){
 		// Close
-		Destroy();
+		Destroy(nullptr);
 		return;
 	}
 
@@ -632,7 +641,7 @@ void Client::SendPacket(unsigned char *packet){
 
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){
 		if(--part->refCount == 0) delete[] (char*)part;
-		Destroy();
+		Destroy("unwritable_3");
 		return;
 	}
 	
@@ -652,7 +661,7 @@ void Client::SendPacket(unsigned char *packet){
 	uv_write(&req->req, (uv_stream_t*) &m_Socket, &part->buf, 1, [](uv_write_t* req2, int status){
 		WriteRequest *req = (WriteRequest *) req2;
 		if(status < 0){
-			req->client->Destroy();
+			req->client->Destroy("write_failed_2");
 		}
 
 		if(--req->part->refCount == 0){
@@ -668,13 +677,13 @@ void Client::WriteAndDestroy(const char *data, size_t len){
 #ifndef _WIN32
 	if(m_bSecure){
 		//FIXME
-		Destroy();
+		Destroy("write_and_destroy_ssl");
 		return;
 	}
 #endif
 	
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){
-		Destroy();
+		Destroy("unwritable_2");
 		return;
 	}
 
@@ -693,7 +702,7 @@ void Client::WriteAndDestroy(const char *data, size_t len){
 
 	uv_write(&request->req, (uv_stream_t*) &m_Socket, &request->buf, 1, [](uv_write_t* req, int status){
 		auto request = (CustomWriteRequest*) req;
-		request->client->Destroy();
+		request->client->Destroy("write_and_destroy");
 		delete request;
 	});
 }
@@ -718,7 +727,7 @@ void Client::WriteRaw(const char *data, size_t len, bool ownsPointer){
 	
 	if(!uv_is_writable((uv_stream_t*) &m_Socket)){
 		if(ownsPointer) delete[] data;
-		Destroy();
+		Destroy("unwritable_1");
 		return;
 	}
 
@@ -739,7 +748,7 @@ void Client::WriteRaw(const char *data, size_t len, bool ownsPointer){
 		auto request = (CustomWriteRequest*) req;
 
 		if(status < 0){
-			request->client->Destroy();
+			request->client->Destroy("write_failed_1");
 		}
 
 		if(request->ownsPointer){

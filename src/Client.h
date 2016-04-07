@@ -32,8 +32,8 @@ class ClientManager;
 class Client {
 public:
 	// Closes the connection
-	void Destroy();
-	
+	void Destroy(const char *reason);
+
 	void SendPacket(unsigned char *packet);
 
 	inline const std::string& GetIP(){
