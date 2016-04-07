@@ -30,12 +30,12 @@ SOFTWARE.
 #include <thread>
 
 namespace {
-	uv_loop_t g_Loop;
 	uv_tcp_t g_Server;
 };
 
 std::thread::id g_WSUV_MainThreadID;
 std::vector<Client*> g_WSUV_Clients;
+extern uv_loop_t g_Loop;
 
 #ifndef _WIN32
 SSL_CTX *g_WSUUV_SSLContext;
@@ -86,9 +86,7 @@ void ClientManager::Init(int port) {
 		puts("SSL setup failing, rejecting SSL clients");
 	}
 	
-#endif
-
-	uv_loop_init(&g_Loop);
+#endif  
 	
 	uv_tcp_init(&g_Loop, &g_Server);
 	struct sockaddr_in addr;
@@ -149,13 +147,10 @@ void ClientManager::Run(){
 		if(client == nullptr) continue;
 		client->CheckQueuedPackets();
 	}
-	
-	uv_run(&g_Loop, UV_RUN_NOWAIT);
 }
 
 void ClientManager::Destroy(){
 	uv_close((uv_handle_t*) &g_Server, nullptr);
-	uv_loop_close(&g_Loop);
 	EVP_cleanup();
 	ERR_free_strings();
 }

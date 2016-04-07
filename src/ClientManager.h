@@ -30,6 +30,8 @@ SOFTWARE.
 #include "uv.h"
 
 
+extern uv_loop_t g_Loop;
+
 // Extend the class Client, and change this to the new name
 #define WSUV_ClientClass EchoClient
 // Also add its include in here:
