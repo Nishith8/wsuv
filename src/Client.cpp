@@ -174,10 +174,6 @@ void Client::HandleSSLError(int err){
 	}else if(err == SSL_ERROR_WANT_READ){
 		// It's async
 	}else{
-#ifdef DEBUG
-		ERR_print_errors_fp(stdout);
-		__builtin_trap();
-#endif
 		Destroy("ssl_error_1");
 	}
 }
