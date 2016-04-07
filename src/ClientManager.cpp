@@ -114,6 +114,14 @@ void ClientManager::OnConnection(uv_stream_t* server, int status){
 	if(uv_accept(server, (uv_stream_t*) client) == 0){
 		uv_tcp_nodelay(client, (int) true);
 		uv_read_start((uv_stream_t*) client, AllocBuffer, OnSocketData);
+		
+		char ip[64];
+		struct sockaddr_storage sa;
+		int nameLength = sizeof(sa);
+		uv_tcp_getpeername(client, (sockaddr*) &sa, &nameLength);
+		uv_ip4_name((sockaddr_in*) &sa, ip, sizeof(ip));
+		clientObj->m_IP = ip;
+			
 	}else{
 		uv_close((uv_handle_t*) client, [](uv_handle_t* handle){
 			delete (Client*) handle->data;

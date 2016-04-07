@@ -35,7 +35,12 @@ public:
 	void Destroy();
 	
 	void SendPacket(unsigned char *packet);
-	
+
+	inline const std::string& GetIP(){
+		assert(!m_IP.empty()); // In the constructor it's still empty, don't use this, call it OnInit
+		return m_IP;
+	}
+
 	// Creates a packet
 	// You then have to send it to clients using SendPacket
 	// Then you have to destroy it with DestroyPacket.
@@ -81,6 +86,8 @@ private:
 #endif
 
 	uv_tcp_t m_Socket;
+	
+	std::string m_IP;
 	bool m_bWaitingForFirstPacket = true;
 #ifndef _WIN32
 	bool m_bSecure = false;
