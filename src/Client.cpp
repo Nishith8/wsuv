@@ -146,9 +146,18 @@ void Client::Destroy(){
 	
 	OnDestroy();
 	
-	uv_close((uv_handle_t*) &m_Socket, [](uv_handle_t* handle){
-		Client *client = (Client*) handle->data;
-		delete client;
+	
+	auto req = new uv_shutdown_t;
+	req->data = this;
+	
+	uv_shutdown(req, (uv_stream_t*)&m_Socket, [](uv_shutdown_t* req, int status) {
+		Client *self = (Client*)req->data;
+		delete req;
+		
+		uv_close((uv_handle_t*) &self->m_Socket, [](uv_handle_t* handle){
+			Client *client = (Client*) handle->data;
+			delete client;
+		});
 	});
 }
 
