@@ -29,11 +29,15 @@ SOFTWARE.
 #include "ClientManager.h"
 #include <unistd.h>
 
+uv_loop_t g_Loop;
+
 int main(){
+	uv_loop_init(&g_Loop);
 	ClientManager::Init(2000);
 	for(;;){
 		ClientManager::Run();
 		usleep(1000);
 	}
 	ClientManager::Destroy();
+	uv_loop_close(&g_Loop);
 }
