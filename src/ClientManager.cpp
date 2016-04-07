@@ -160,6 +160,8 @@ void ClientManager::Run(){
 
 void ClientManager::Destroy(){
 	uv_close((uv_handle_t*) &g_Server, nullptr);
+#ifndef _WIN32
 	EVP_cleanup();
 	ERR_free_strings();
+#endif
 }

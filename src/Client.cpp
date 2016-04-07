@@ -84,7 +84,10 @@ struct WriteRequestPart {
 
 
 extern std::vector<Client*> g_WSUV_Clients;
+
+#ifndef _WIN32
 extern SSL_CTX *g_WSUUV_SSLContext;
+#endif
 
 namespace {
 	
